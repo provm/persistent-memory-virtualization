@@ -1,9 +1,9 @@
 # Patches for linux 4.9.14 and qemu 2.8.0
-See Virtio.md for notes on creating a new virtio device and setting up the communication properly between frontend and backend drivers.
+See virtio.md for notes on creating a new virtio device and setting up the communication properly between frontend and backend drivers.
 
 ## Steps for applying the patches
 * Download and unzip the linux-4.9.14 and qemu-2.8.0 source code.
-* [Linux Academy | https://linuxacademy.com/blog/linux/introduction-using-diff-and-patch/] has an excellent article on using the patch utility.
+* [Linux Academy](https://linuxacademy.com/blog/linux/introduction-using-diff-and-patch/) has an excellent article on using the patch utility.
 
 ## Linux build instructions
 * Make sure that you have configured the kernel and enabled the virtio drivers.
