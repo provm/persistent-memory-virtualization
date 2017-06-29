@@ -1,0 +1,863 @@
+diff -u5 -rNX exclude-linux linux-4.9.14/block/blk-merge.c ../linux/linux-4.9.14/block/blk-merge.c
+--- linux-4.9.14/block/blk-merge.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/block/blk-merge.c	2017-06-12 19:05:28.362798168 +0530
+@@ -357,10 +357,17 @@
+ 		return 1;
+ 
+ 	return 0;
+ }
+ 
++
++/* Added by Bhavesh Singh. 2017.06.12. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.06.12. End add */
++
+ static inline void
+ __blk_segment_map_sg(struct request_queue *q, struct bio_vec *bvec,
+ 		     struct scatterlist *sglist, struct bio_vec *bvprv,
+ 		     struct scatterlist **sg, int *nsegs, int *cluster)
+ {
+@@ -489,10 +496,15 @@
+ 	WARN_ON(nsegs > rq->nr_phys_segments);
+ 
+ 	return nsegs;
+ }
+ EXPORT_SYMBOL(blk_rq_map_sg);
++/* Added by Bhavesh Singh. 2017.06.12. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.06.12. End add */
++
+ 
+ static inline int ll_new_hw_segment(struct request_queue *q,
+ 				    struct request *req,
+ 				    struct bio *bio)
+ {
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/block/Makefile ../linux/linux-4.9.14/drivers/block/Makefile
+--- linux-4.9.14/drivers/block/Makefile	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/block/Makefile	2017-05-30 13:50:35.953686028 +0530
+@@ -42,5 +42,9 @@
+ obj-$(CONFIG_BLK_DEV_NULL_BLK)	+= null_blk.o
+ obj-$(CONFIG_ZRAM) += zram/
+ 
+ skd-y		:= skd_main.o
+ swim_mod-y	:= swim.o swim_asm.o
++
++# Added by Bhavesh Singh. 2017.05.07. Begin add
++obj-y += virtio_vssd.o
++# Added by Bhavesh Singh. 2017.05.07. End add
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/block/virtio_blk.c ../linux/linux-4.9.14/drivers/block/virtio_blk.c
+--- linux-4.9.14/drivers/block/virtio_blk.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/block/virtio_blk.c	2017-06-17 15:24:04.321644955 +0530
+@@ -171,10 +171,30 @@
+ 	int err;
+ 	bool notify = false;
+ 
+ 	BUG_ON(req->nr_phys_segments + 2 > vblk->sg_elems);
+ 
++
++
++
++	/* Added by Bhavesh Singh. 2017.06.17. Begin add */
++	struct bio *bio;
++	struct bio_vec bvec;
++	struct bvec_iter iter;
++	u64 sector_num;
++	bio = req->bio;
++	for_each_bio(bio) {
++		bio_for_each_segment(bvec, bio, iter) {
++			//printk(KERN_ALERT "virtio_vssd: BIO Flags: %u\n", bio_flags(bio) & BIO_NULL_MAPPED);
++			sector_num = iter.bi_sector;
++			//printk(KERN_ALERT "virtioblk: Sector number: %llu\n", sector_num);
++		}
++	}
++	/* Added by Bhavesh Singh. 2017.06.17. End add */
++
++
++
+ 	vbr->req = req;
+ 	if (req_op(req) == REQ_OP_FLUSH) {
+ 		vbr->out_hdr.type = cpu_to_virtio32(vblk->vdev, VIRTIO_BLK_T_FLUSH);
+ 		vbr->out_hdr.sector = 0;
+ 		vbr->out_hdr.ioprio = cpu_to_virtio32(vblk->vdev, req_get_ioprio(vbr->req));
+@@ -374,10 +394,17 @@
+ 	struct virtio_blk *vblk = vdev->priv;
+ 
+ 	queue_work(virtblk_wq, &vblk->config_work);
+ }
+ 
++
++/* Added by Bhavesh Singh. 2017.04.14. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.04.14. End add */
++
+ static int init_vq(struct virtio_blk *vblk)
+ {
+ 	int err;
+ 	int i;
+ 	vq_callback_t **callbacks;
+@@ -428,10 +455,15 @@
+ 	if (err)
+ 		kfree(vblk->vqs);
+ 	return err;
+ }
+ 
++/* Added by Bhavesh Singh. 2017.04.14. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.04.14. End add */
++
+ /*
+  * Legacy naming scheme used for virtio devices.  We are stuck with it for
+  * virtio blk but don't ever use it for any new driver.
+  */
+ static int virtblk_name_format(char *prefix, int index, char *buf, int buflen)
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/block/virtio_vssd.c ../linux/linux-4.9.14/drivers/block/virtio_vssd.c
+--- linux-4.9.14/drivers/block/virtio_vssd.c	1970-01-01 05:30:00.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/block/virtio_vssd.c	2017-06-24 04:47:25.407829533 +0530
+@@ -0,0 +1,563 @@
++/*
++ * Virtio VSSD Support
++ *
++ * Copyright Indian Institute of Technology Bombay. 2017
++ * Copyright Bhavesh Singh <bhavesh@cse.iitb.ac.in>
++ *
++ * This work is licensed under the terms of GNU GPL, version 3.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include <linux/module.h>
++#include <linux/virtio.h>
++#include <linux/virtio_config.h>
++#include <linux/freezer.h>
++#include <linux/cpu.h>
++
++#include <linux/blkdev.h>
++#include <linux/kernel.h>
++#include <linux/hdreg.h>
++
++#include <linux/vmalloc.h>
++#include <linux/random.h>
++
++//#include <linux/hrtimer.h>
++//#include <linux/ktime.h>
++
++#include <linux/proc_fs.h>
++
++#define VIRTIO_ID_VSSD 54
++#define SG_SIZE 1024 //128 // TODO: Figure out the optimal size for this. For virtio_blk, this comes from PCI configuration.
++#define MINORS 16 // We set it to 16. Allowing partitions for now. // OLD TODO: Again, we want only one minor device number for this device.
++
++#define SSD_BALLOON_UNIT 4096//2046
++
++//#define RESIZE_CHECK_DELAY 200E6L; // In nanoseconds; 200 ms * 10^6.
++
++/* Added by Bhavesh Singh. 2017.06.15. Begin add */
++struct proc_dir_entry *blknum_proc_file;
++static u32 *blknums;
++static u32 idx=0;
++static u32 idx_remove=0;
++/* Added by Bhavesh Singh. 2017.06.15. End add */
++
++/*
++ * struct virtio_vssd_resize_info - represents the resize information passed between host and guest
++ * Usage:
++ * GUEST-TO-HOST: (1): status < 0, ack = don't care, sector_list = list of sectors guest gives to host
++ * 					   the guest gives back the number of sectors asked in HOST-TO-GUEST (2) below
++ *		 		  (2): status > 0, ack = 1 , sector_list = don't care
++ *		 		  	   the guest acknowledges the number of sectors it has recieved from the host
++ *		 		  	   in HOST-TO-GUEST (1) below
++ * HOST-TO-GUEST: (1): status > 0, ack = don't care, sector_list = list of sectors host returns to guest
++ * 					   the host returns some sectors back to the guest which then acknowledges them
++ * 			   	  (2): status < 0, ack = 1, sector_list = don't care
++ * 			   	  	   the host acknowledges the number of sectors it has received from the guest
++ */
++struct virtio_vssd_resize_info {
++	s32 status;
++	s32 ack;
++	//u64 *sector_list;
++	u64 sector_list[SSD_BALLOON_UNIT]; // Just less than a page length as there is a status field too here.
++};
++
++struct virtio_vssd {
++	struct virtio_device *vdev;
++	struct virtqueue *vq, *ctrl_vq;
++
++	spinlock_t q_lock/*, list_lock*/;
++
++	struct request_queue *queue;
++	struct gendisk *gdisk;
++
++	struct scatterlist sglist[SG_SIZE]/*, sg_resize_info*/;
++
++	sector_t capacity;
++	u32 *block_list; // bitmap of valid sector numbers
++};
++
++struct vssd_hdr {
++	u32 type;
++	u64 sector;
++};
++
++struct virtio_vssd_request {
++//	struct bio *bio;
++	struct request *request;
++	struct vssd_hdr hdr;
++	s32 status;
++};
++
++struct virtio_vssd_config {
++	__le32 command; // this is little endian for some reason
++	__le64 capacity;
++};
++
++static int virtio_vssd_major = 0;
++//static struct resize_check_timer resize_timer;
++
++/* Added by Bhavesh Singh. 2017.06.06. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.06.06. End add */
++static void virtio_vssd_free_blocks(struct virtio_vssd *vssd, struct virtio_vssd_resize_info *resize_info) {
++	u32 i, j=0, total_sectors = vssd->capacity < abs(resize_info->status) ? vssd->capacity : abs(resize_info->status);
++	u32 *list = vssd->block_list;
++	u64 blk_num, sector_num;
++
++	/* Added by Bhavesh Singh. 2017.06.16. Begin add */
++	/*
++	for(;j<total_sectors;) {
++		get_random_bytes_arch(&sector_num, 8); // evict blocks randomly
++		sector_num = sector_num % vssd->capacity;
++		spin_lock_irq(&vssd->q_lock);
++		if((list[sector_num/32] & (1 << (sector_num % 32))) == 0) {
++			list[sector_num/32] |= (1 << (sector_num % 32));
++			resize_info->sector_list[j++] = sector_num;
++		}
++		spin_unlock_irq(&vssd->q_lock);
++	}
++	*/
++	/* Added by Bhavesh Singh. 2017.06.16. End add */
++
++	/* Commented by Bhavesh Singh. 2017.06.16. Begin comment */
++
++	for(;j<total_sectors && idx_remove < idx;) {
++		blk_num = blknums[idx_remove++];
++		for(i=0; i<8; i++) {
++			sector_num = blk_num * 8 + i;
++			spin_lock_irq(&vssd->q_lock);
++			if((list[sector_num/32] & (1 << (sector_num % 32))) == 0) {
++				list[sector_num/32] |= (1 << (sector_num % 32));
++				resize_info->sector_list[j++] = sector_num;
++			}
++			spin_unlock_irq(&vssd->q_lock);
++		}
++	}
++
++	/* Commented by Bhavesh Singh. 2017.06.16. End comment */
++}
++
++static void virtio_vssd_map_blocks(struct virtio_vssd *vssd, struct virtio_vssd_resize_info *resize_info) {
++	s32 i =0, total_sectors = resize_info->status - resize_info->ack;
++	u64 sector_num;
++	u32 *list = vssd->block_list;
++	for(;i<abs(total_sectors);i++) {
++		sector_num = resize_info->sector_list[i];
++		spin_lock_irq(&vssd->q_lock);
++		list[sector_num/32] &= ~(1 << (sector_num % 32));
++		spin_unlock_irq(&vssd->q_lock);
++	}
++	resize_info->ack += total_sectors;
++}
++/* Added by Bhavesh Singh. 2017.06.06. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.06.06. End add */
++
++static void virtio_vssd_resize_query(struct virtio_vssd *vssd, s32 status, s32 ack) {
++	struct scatterlist *sglist[2], res_info;
++	struct virtio_vssd_resize_info *resize_info;
++	int out = 0, in = 0, error;
++	resize_info = kmalloc(sizeof(*resize_info), GFP_ATOMIC);
++	resize_info->status = status;
++	resize_info->ack = ack;
++	sg_init_one(&res_info, resize_info, sizeof(*resize_info));
++	sglist[in++] = &res_info;
++	if(status < 0) {
++		virtio_vssd_free_blocks(vssd, resize_info);
++	}
++	error = virtqueue_add_sgs(vssd->ctrl_vq, sglist, out, in, resize_info, GFP_ATOMIC);
++	if (error == 0) {
++		virtqueue_kick(vssd->ctrl_vq);
++	}
++}
++
++static void virtio_vssd_request_completed(struct virtqueue *vq) {
++	struct virtio_vssd_request *vssdreq;
++	struct virtio_vssd *vssd = vq->vdev->priv;
++	unsigned long flags;
++	unsigned int len;
++	bool request_done = false;
++
++	//printk(KERN_ALERT "virtio_vssd: Callback called!\n");
++
++	spin_lock_irqsave(&vssd->q_lock, flags);
++	do {
++		virtqueue_disable_cb(vq);
++		while ((vssdreq = virtqueue_get_buf(vq, &len)) != NULL) {
++			//printk(KERN_ALERT "virtio_vssd: Response popped! Sector: %llu\tType: %u\tStatus: %d\n", vssdreq->hdr.sector, vssdreq->hdr.type, vssdreq->status);
++//			blk_complete_request(vssdreq->request);
++			__blk_end_request_all(vssdreq->request, vssdreq->status); // Add these requests to a list and end them outside the spinlock of the vssd.
++			//printk(KERN_ALERT "virtio_vssd: Request end returned successfully\n");
++			request_done = true;
++			kfree(vssdreq);
++		}
++		if (unlikely(virtqueue_is_broken(vq))) {
++			printk(KERN_ALERT "virtio_vssd: virtqueue is broken\n");
++			break;
++		}
++	} while (!virtqueue_enable_cb(vq));
++
++	if(request_done && blk_queue_stopped(vssd->gdisk->queue)) {
++		blk_start_queue(vssd->gdisk->queue);
++	}
++	spin_unlock_irqrestore(&vssd->q_lock, flags);
++	return;
++}
++
++static void virtio_vssd_resize_callback(struct virtqueue *vq) {
++	unsigned int len;
++	struct virtio_vssd *vssd = vq->vdev->priv;
++	struct virtio_vssd_resize_info *resize_info;
++//	bool return_blocks = false;
++	int status, ack;
++
++	//printk(KERN_ALERT "virtio_vssd: Resize callback called\n");
++//	printk(KERN_ALERT "virtio_vssd: Resize response: Status: %d\n", vssd->resize_info.status);
++	do {
++		virtqueue_disable_cb(vq);
++		while ((resize_info = virtqueue_get_buf(vq, &len)) != NULL) {
++			//printk(KERN_ALERT "virtio_vssd: Resize response popped! Status: %d, Ack: %d\n", resize_info->status, resize_info->ack);
++			status = resize_info->status;
++			if(status < 0) {
++				// The call goes from the handler for config change. So this is just the ack from the backend.
++				ack = resize_info->ack;
++				if(abs(status-ack) != 0) {
++					virtio_vssd_map_blocks(vssd, resize_info);
++				}
++			} else if(status > 0) {
++				// We need to process the blocks that the backend has given. And ack the same.
++				virtio_vssd_map_blocks(vssd, resize_info);
++				virtio_vssd_resize_query(vssd, resize_info->status, resize_info->ack);
++			}
++			kfree(resize_info);
++		}
++		if (unlikely(virtqueue_is_broken(vq))) {
++			printk(KERN_ALERT "virtio_vssd: virtqueue is broken\n");
++			break;
++		}
++	} while (!virtqueue_enable_cb(vq));
++
++//	if(return_blocks)
++//		virtio_vssd_resize_query(status);
++}
++
++static int init_virtqueues(struct virtio_vssd *vssd) {
++	struct virtqueue *vqs[1];
++
++	vq_callback_t *callbacks[] = { virtio_vssd_request_completed, virtio_vssd_resize_callback };
++	const char *names[] = { "virtio_vssd_request_completed", "virtio_vssd_resize_callback" };
++
++	int err;
++	int nvqs = 2;
++
++	err = vssd->vdev->config->find_vqs(vssd->vdev, nvqs, vqs, callbacks, names);
++	if (err) {
++		return err;
++	}
++
++	vssd->vq = vqs[0];
++	vssd->ctrl_vq = vqs[1];
++
++//	sg_init_one(&vssd->sg_resize_info, &vssd->resize_info, sizeof(struct virtio_vssd_resize_info));
++//	if (virtqueue_add_inbuf(vssd->ctrl_vq, &vssd->sg_resize_info, 1, vssd, GFP_KERNEL) < 0)
++//		BUG();
++//	virtqueue_kick(vssd->ctrl_vq);
++
++	return 0;
++}
++
++/* Added by Bhavesh Singh. 2017.06.19. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.06.19. End add */
++static bool virtio_vssd_request_valid(const struct request *req, const struct virtio_vssd *vssd) {
++	struct bio *bio;
++	struct bio_vec bvec;
++	struct bvec_iter iter;
++	u64 sector_num;
++	u32 *list = vssd->block_list;
++	//bool invalid_block = false;
++
++	bio = req->bio;
++	for_each_bio(bio) {
++		bio_for_each_segment(bvec, bio, iter) {
++			//printk(KERN_ALERT "virtio_vssd: Sector number: %lu\n", iter.bi_sector);
++			//printk(KERN_ALERT "virtio_vssd: BIO Flags: %u\n", bio_flags(bio) & BIO_NULL_MAPPED);
++			sector_num = iter.bi_sector;
++			if((list[sector_num/32] & (1 << (sector_num % 32))) == (1 << (sector_num % 32))) {
++				//printk(KERN_ALERT "virtio_vssd: BIO Flags: %d\n", bio_flags(bio) | ~BIO_SEG_VALID);
++				//invalid_block = true;
++				//printk(KERN_ALERT "virtio_vssd: Sector number: %lu\n", iter.bi_sector);
++				blk_start_request(req); // This is necessary, otherwise it BUGs on blk_queued_req(req)
++				__blk_end_request_all(req, -EIO);
++				//bio->bi_error = -EIO;
++				return false;
++			}
++		}
++	}
++	return true;
++}
++/* Added by Bhavesh Singh. 2017.06.19. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.06.19. End add */
++
++static void virtio_vssd_request(struct request_queue *q) {
++	struct request *req;
++	struct virtio_vssd *vssd = q->queuedata;
++	struct virtio_vssd_request *vssdreq;
++	struct scatterlist *sglist[3];
++	struct scatterlist hdr, status;
++	unsigned int num = 0, out = 0, in = 0;
++	int error;
++
++	//printk(KERN_ALERT "virtio_vssd: Request fn called!\n");
++
++   if(unlikely((req = blk_peek_request(q)) == NULL))
++	    goto no_out;
++
++   if(req->cmd_type != REQ_TYPE_FS)
++   		 goto no_out;
++
++   if(!virtio_vssd_request_valid(req, vssd))
++	   goto no_out;
++
++	vssdreq = kmalloc(sizeof(*vssdreq), GFP_ATOMIC);
++	if (unlikely(!vssdreq)) {
++		goto no_out;
++	}
++
++	vssd = req->rq_disk->private_data;
++	vssdreq->request = req;
++
++	num = blk_rq_map_sg(q, req, vssd->sglist);
++	//printk(KERN_ALERT "virtio_vssd: Request mapped to sglist. Count: %u\n", num);
++
++	if(unlikely(!num))
++		goto free_vssdreq;
++
++	vssdreq->hdr.sector = cpu_to_virtio32(vssd->vdev, blk_rq_pos(req));
++	vssdreq->hdr.type = cpu_to_virtio32(vssd->vdev, rq_data_dir(req));
++
++	sg_init_one(&hdr, &vssdreq->hdr, sizeof(vssdreq->hdr));
++	sglist[out++] = &hdr;
++
++	if (rq_data_dir(req) == WRITE) {
++		sglist[out++] = vssd->sglist;
++	} else {
++		sglist[out + in++] = vssd->sglist;
++	}
++
++	sg_init_one(&status, &vssdreq->status, sizeof(vssdreq->status));
++	sglist[out + in++] = &status;
++
++	//printk(KERN_ALERT "virtio_vssd: Sector: %llu\tDirection: %u\n", vssdreq->hdr.sector, vssdreq->hdr.type);
++	error = virtqueue_add_sgs(vssd->vq, sglist, out, in, vssdreq, GFP_ATOMIC);
++	if (error < 0) {
++		//printk(KERN_ALERT "virtio_vssd: Error adding scatterlist to virtqueue. Stopping request queue\n");
++		blk_stop_queue(q);
++		goto free_vssdreq;
++	}
++	blk_start_request(req);
++	virtqueue_kick(vssd->vq);
++
++no_out:
++	return;
++
++free_vssdreq:
++	kfree(vssdreq);
++}
++
++//static int virtio_vssd_getgeo(struct block_device *bd, struct hd_geometry *geo)
++//{
++//	/* some standard values, similar to sd */
++//	geo->heads = (1 << 6);
++//	geo->sectors = (1 << 5);
++//	geo->cylinders = get_capacity(bd->bd_disk) >> 11;
++//	return 0;
++//}
++
++static struct block_device_operations virtio_vssd_ops = {
++	.owner           = THIS_MODULE,
++//	.open 	         = virtio_vssd_open,
++//	.release 	 	 = virtio_vssd_release,
++//	.media_changed   = virtio_vssd_media_changed,
++//	.revalidate_disk = virtio_vssd_revalidate,
++//	.ioctl	         = virtio_vssd_ioctl,
++//	.getgeo 		 = virtio_vssd_getgeo,
++};
++
++static int virtio_vssd_probe(struct virtio_device *vdev) {
++	struct virtio_vssd *vssd;
++	int err;
++	__le64 capacity;
++
++	vssd = kzalloc(sizeof(*vssd), GFP_KERNEL);
++	if (!vssd) {
++		err = -ENOMEM;
++		goto out;
++	}
++
++	vssd->vdev = vdev;
++
++	// TODO: We need to figure out capacity too and tell it to the kernel. Read it off the PCI configuration.
++	//vssd->capacity = 2097152; // =2^21 (# of 512 byte sectors; therefore 2^30 bytes or 1GB)
++	virtio_cread(vdev, struct virtio_vssd_config, capacity, &capacity);
++	vssd->capacity = __le64_to_cpu(capacity);
++
++	vssd->block_list = vzalloc(sizeof(u32) * vssd->capacity/32); // We divide by 32 as our array is of unsigned 32 bit integers.
++
++	err = init_virtqueues(vssd);
++	if (err) {
++		goto out_free_vssd;
++	}
++
++	spin_lock_init(&vssd->q_lock);
++//	spin_lock_init(&vssd->list_lock);
++
++	vssd->queue = blk_init_queue(virtio_vssd_request, &vssd->q_lock);
++	if(vssd->queue == NULL) {
++		err = -ENOMEM;
++		goto out_free_vssd;
++	}
++
++	vssd->queue->queuedata = vssd;
++	vdev->priv = vssd;
++
++	vssd->gdisk = alloc_disk(MINORS);
++		if (!vssd->gdisk) {
++			//printk (KERN_ALERT "virtio_vssd: Call to alloc_disk failed\n");
++			goto out_free_vssd;
++		}
++	vssd->gdisk->major = virtio_vssd_major;
++	vssd->gdisk->first_minor = MINORS;
++	vssd->gdisk->fops = &virtio_vssd_ops;
++	vssd->gdisk->queue = vssd->queue;
++	vssd->gdisk->private_data = vssd;
++	snprintf (vssd->gdisk->disk_name, 32, "vssda"); // TODO: A crude hard-coding, since we are creating only one device of this kind.
++
++	set_capacity(vssd->gdisk, vssd->capacity);
++	add_disk(vssd->gdisk);
++
++	sg_init_table(vssd->sglist, SG_SIZE);
++
++	printk(KERN_ALERT "virtio_vssd: Device initialized\n");
++	return 0;
++
++out_free_vssd:
++	vssd->vdev->config->del_vqs(vssd->vdev);
++	kfree(vssd);
++
++out:
++	return err;
++}
++
++static void virtio_vssd_remove(struct virtio_device *vdev) {
++	struct virtio_vssd *vssd;
++	vssd = vdev->priv;
++	vssd->vdev->config->reset(vssd->vdev);
++	vssd->vdev->config->del_vqs(vssd->vdev);
++
++	del_gendisk(vssd->gdisk);
++	blk_cleanup_queue(vssd->gdisk->queue);
++
++	kfree(vssd);
++
++	printk(KERN_ALERT "virtio_vssd: Device removed\n");
++}
++
++static void virtio_vssd_conf_changed(struct virtio_device *vdev) {
++	struct virtio_vssd *vssd = vdev->priv;
++	__le32 command;
++
++	virtio_cread(vdev, struct virtio_vssd_config, command, &command);
++	//printk(KERN_ALERT "virtio_vssd: Config change detected! Command: %d\n", command);
++
++	virtio_vssd_resize_query(vssd, __le32_to_cpu(command), -1); // ack = -1 for new requests.
++}
++
++static unsigned int features[] = { 0 };
++
++static struct virtio_device_id id_table[] = {
++		{ VIRTIO_ID_VSSD, VIRTIO_DEV_ANY_ID },
++		{ 0 },
++};
++
++static struct virtio_driver virtio_vssd_driver = {
++		.feature_table = features,
++		.feature_table_size = ARRAY_SIZE(features),
++		.driver.name = KBUILD_MODNAME,
++		.driver.owner = THIS_MODULE,
++		.id_table = id_table,
++		.probe = virtio_vssd_probe,
++		.remove = virtio_vssd_remove,
++		.config_changed = virtio_vssd_conf_changed,
++};
++
++/* Added by Bhavesh Singh. 2017.06.15. Begin add */
++
++ssize_t write_blknum_proc(struct file *filp, const char __user *buf, size_t count, loff_t *offp) {
++	char num[256];
++	unsigned int number;
++	strncpy_from_user(num, buf, count);
++	if(unlikely(kstrtouint(num, 10, &number) < 0))
++		goto out;
++	//printk(KERN_ALERT "virtio_vssd: Write called: %u\n", number);
++	blknums[idx++] = number;
++out:
++	return count;
++}
++
++static struct file_operations fops_blknum = {
++  .owner   = THIS_MODULE,
++  .write   = write_blknum_proc,
++};
++/* Added by Bhavesh Singh. 2017.06.15. End add */
++
++
++static __init int virtio_vssd_driver_init(void) {
++	int error;
++
++	virtio_vssd_major = register_blkdev(virtio_vssd_major, "virtio_vssd");
++	if(virtio_vssd_major <= 0) {
++		printk(KERN_ALERT "virtio_vssd: Unable to get major device number\n");
++		error = -EBUSY;
++		goto out;
++	}
++
++	error = register_virtio_driver(&virtio_vssd_driver);
++	if(error) {
++		unregister_blkdev(virtio_vssd_major, "virtio_vssd");
++	}
++
++	/* Added by Bhavesh Singh. 2017.06.15. Begin add */
++	blknums = vzalloc(sizeof(u32) * 262144);
++	proc_create("vssd_balloon_blknum", S_IWUSR|S_IWGRP|S_IWOTH, NULL, &fops_blknum);
++	/* Added by Bhavesh Singh. 2017.06.15. End add */
++
++out:
++	return error;
++}
++
++static __exit void virtio_vssd_driver_exit(void) {
++	unregister_virtio_driver(&virtio_vssd_driver);
++	unregister_blkdev(virtio_vssd_major, "virtio_vssd");
++	/* Added by Bhavesh Singh. 2017.06.15. Begin add */
++	remove_proc_entry("vssd_balloon_blknum", NULL);
++	kfree(blknums);
++	/* Added by Bhavesh Singh. 2017.06.15. End add */
++}
++
++module_init(virtio_vssd_driver_init);
++module_exit(virtio_vssd_driver_exit);
++
++//module_virtio_driver(virtio_vssd_driver);
++MODULE_DEVICE_TABLE(virtio, id_table);
++
++MODULE_AUTHOR("Bhavesh Singh <bhavesh@cse.iitb.ac.in>");
++MODULE_DESCRIPTION("VirtIO vSSD driver");
++MODULE_LICENSE("GPL");
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/pci/probe.c ../linux/linux-4.9.14/drivers/pci/probe.c
+--- linux-4.9.14/drivers/pci/probe.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/pci/probe.c	2017-03-19 17:42:19.758602572 +0530
+@@ -1200,10 +1200,17 @@
+  * vendor,class,memory and IO-space addresses,IRQ lines etc.
+  * Called at initialisation of the PCI subsystem and by CardBus services.
+  * Returns 0 on success and negative if unknown type of device (not normal,
+  * bridge or CardBus).
+  */
++
++/* Added by Bhavesh Singh. 2017.03.19. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.03.19. End add */
++
+ int pci_setup_device(struct pci_dev *dev)
+ {
+ 	u32 class;
+ 	u16 cmd;
+ 	u8 hdr_type;
+@@ -1351,10 +1358,15 @@
+ 
+ 	/* We found a fine healthy device, go go go... */
+ 	return 0;
+ }
+ 
++/* Added by Bhavesh Singh. 2017.03.19. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.03.19. End add */
++
+ static void pci_configure_mps(struct pci_dev *dev)
+ {
+ 	struct pci_dev *bridge = pci_upstream_bridge(dev);
+ 	int mps, p_mps, rc;
+ 
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/virtio/virtio.c ../linux/linux-4.9.14/drivers/virtio/virtio.c
+--- linux-4.9.14/drivers/virtio/virtio.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/virtio/virtio.c	2017-03-18 15:06:08.479902619 +0530
+@@ -66,19 +66,26 @@
+ 	&dev_attr_features.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(virtio_dev);
+ 
++/* Added by Bhavesh Singh. 2017.03.18. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.03.18. End add */
++
+ static inline int virtio_id_match(const struct virtio_device *dev,
+ 				  const struct virtio_device_id *id)
+ {
+ 	if (id->device != dev->id.device && id->device != VIRTIO_DEV_ANY_ID)
+ 		return 0;
+ 
+ 	return id->vendor == VIRTIO_DEV_ANY_ID || id->vendor == dev->id.vendor;
+ }
+ 
++
+ /* This looks through all the IDs a driver claims to support.  If any of them
+  * match, we return 1 and the kernel will call virtio_dev_probe(). */
+ static int virtio_dev_match(struct device *_dv, struct device_driver *_dr)
+ {
+ 	unsigned int i;
+@@ -90,10 +97,15 @@
+ 		if (virtio_id_match(dev, &ids[i]))
+ 			return 1;
+ 	return 0;
+ }
+ 
++/* Added by Bhavesh Singh. 2017.03.18. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.03.18. End add */
++
+ static int virtio_uevent(struct device *_dv, struct kobj_uevent_env *env)
+ {
+ 	struct virtio_device *dev = dev_to_virtio(_dv);
+ 
+ 	return add_uevent_var(env, "MODALIAS=virtio:d%08Xv%08X",
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/virtio/virtio_pci_common.c ../linux/linux-4.9.14/drivers/virtio/virtio_pci_common.c
+--- linux-4.9.14/drivers/virtio/virtio_pci_common.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/virtio/virtio_pci_common.c	2017-05-05 02:25:33.534079994 +0530
+@@ -482,10 +482,17 @@
+ 	 * free the memory (including the reference counter itself)
+ 	 * until it's release callback. */
+ 	kfree(vp_dev);
+ }
+ 
++
++/* Added by Bhavesh Singh. 2017.03.18. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.03.18. End add */
++
+ static int virtio_pci_probe(struct pci_dev *pci_dev,
+ 			    const struct pci_device_id *id)
+ {
+ 	struct virtio_pci_device *vp_dev;
+ 	int rc;
+@@ -540,10 +547,16 @@
+ err_enable_device:
+ 	kfree(vp_dev);
+ 	return rc;
+ }
+ 
++/* Added by Bhavesh Singh. 2017.03.18. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.03.18. End add */
++
++
+ static void virtio_pci_remove(struct pci_dev *pci_dev)
+ {
+ 	struct virtio_pci_device *vp_dev = pci_get_drvdata(pci_dev);
+ 	struct device *dev = get_device(&vp_dev->vdev.dev);
+ 
+diff -u5 -rNX exclude-linux linux-4.9.14/drivers/virtio/virtio_ring.c ../linux/linux-4.9.14/drivers/virtio/virtio_ring.c
+--- linux-4.9.14/drivers/virtio/virtio_ring.c	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/drivers/virtio/virtio_ring.c	2017-05-13 02:12:27.886370920 +0530
+@@ -255,10 +255,16 @@
+ 	for (i = 0; i < total_sg; i++)
+ 		desc[i].next = cpu_to_virtio16(_vq->vdev, i + 1);
+ 	return desc;
+ }
+ 
++
++/* Added by Bhavesh Singh. 2017.05.13. Begin add */
++/* WARNING: Remove the #pragma GCC just below this function too if removing this */
++#pragma GCC push_options
++#pragma GCC optimize ("-O0")
++/* Added by Bhavesh Singh. 2017.05.13. End add */
+ static inline int virtqueue_add(struct virtqueue *_vq,
+ 				struct scatterlist *sgs[],
+ 				unsigned int total_sg,
+ 				unsigned int out_sgs,
+ 				unsigned int in_sgs,
+@@ -429,10 +435,15 @@
+ 		kfree(desc);
+ 
+ 	END_USE(vq);
+ 	return -EIO;
+ }
++/* Added by Bhavesh Singh. 2017.05.13. Begin add */
++/* WARNING: Remove the #pragma GCC just above this function too if removing this */
++#pragma GCC pop_options
++/* Added by Bhavesh Singh. 2017.05.13. End add */
++
+ 
+ /**
+  * virtqueue_add_sgs - expose buffers to other end
+  * @vq: the struct virtqueue we're talking about.
+  * @sgs: array of terminated scatterlists.
+diff -u5 -rNX exclude-linux linux-4.9.14/Makefile ../linux/linux-4.9.14/Makefile
+--- linux-4.9.14/Makefile	2017-03-12 11:12:15.000000000 +0530
++++ ../linux/linux-4.9.14/Makefile	2017-03-17 20:25:49.198215440 +0530
+@@ -639,11 +639,16 @@
+ KBUILD_CFLAGS	+= -Os $(call cc-disable-warning,maybe-uninitialized,)
+ else
+ ifdef CONFIG_PROFILE_ALL_BRANCHES
+ KBUILD_CFLAGS	+= -O2 $(call cc-disable-warning,maybe-uninitialized,)
+ else
+-KBUILD_CFLAGS   += -O2
++# Commented by Bhavesh Singh. 2017.03.17. Begin comment
++#KBUILD_CFLAGS   += -O2
++# Commented by Bhavesh Singh. 2017.03.17. End comment
++# Added by Bhavesh Singh. 2017.03.17. Begin add
++KBUILD_CFLAGS   += -O1 # with no optimization, i.e. -O0, the kernel doesn't even build. :P
++# Added by Bhavesh Singh. 2017.03.17. End add
+ endif
+ endif
+ 
+ KBUILD_CFLAGS += $(call cc-ifversion, -lt, 0409, \
+ 			$(call cc-disable-warning,maybe-uninitialized,))
