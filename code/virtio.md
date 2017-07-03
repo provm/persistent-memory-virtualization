@@ -135,12 +135,12 @@ struct virtio_vssd {
 ```
 As mentioned earlier, the basic device need not do a lot. It just has to have virtqueues and must extend `struct virtio_device`.
 
-We need to register the driver using `register_virtio_driver()`. The `struct virtio_driver` that we register here has an `id_table` field. This is where we give the virtio device id (and not the PCI id) of our device, VirtIOVssd which we defined in the backend in `include/standard-headers/linux/virtio_ids.h`. The linux kernel has some convoluted mechanism because of which it replaces the PCI device id with the subdevice id for newer virtio devices. This happens in the virtio PCI device discovery code which we don't touch. Here's a mail that I had sent it to Puru Sir, after finally figuring out this mystery:
+We need to register the driver using `register_virtio_driver()`. The `struct virtio_driver` that we register here has an `id_table` field. This is where we give the virtio device id (and not the PCI id) of our device, VirtIOVssd which we defined in the backend in `include/standard-headers/linux/virtio_ids.h`. The linux kernel has some convoluted mechanism because of which it replaces the PCI device id with the subdevice id for newer virtio devices. This happens in the virtio PCI device discovery code which we don't touch. Here's a mail that I had sent to Puru Sir, after finally figuring out this mystery:
 
 > A PCI device configuration has 4 fields to identify the vendor, device, subvendor and subdevice. And Virtio developers decided to use these fields very confusingly. In the frontend virtio device initialization code, they replace the device id with the subdevice id. Hence, even if we want to match against the device id we specified in the backend (0x1016), we match against 54.
-
+>
 > Now, even when I set the subdevice id to 0x1016 in the backend, it was being replaced by 54. This is because, in the backend, it is populated by the Virtio device id, which was 54. I had defined it and forgotten about it as it was not being used anywhere directly. And moreover, we were using a Virtio PCI device. Well, a Virtio PCI device encapsulates the Virtio device.
-
+>
 > I have not understood why they do so yet. Probably it is done to avoid code rewrite. Till virtio 1.0, the devices had different device codes.
 
 We register a `probe` function that is reponsible for registering this driver for our device. 
@@ -234,3 +234,191 @@ We populate the other elements of `VirtIOVssdReq` ourselves. We look at this cal
 When its time for the host to tell the guest, it pushes the virtqueue element on the virtqueue using `virtqueue_push`, and then calls `virtio_notify` to notify the guest that the request has been processed.
 
 Other handy functions to note are `iov_to_buf`, which copies data from an iovec to a buffer (a struct, array etc). Then we can work on the data in the buffer directly. After we are done, we can again copy data from the buffer to the iovec using `iov_from_buf`.
+
+## Creating a Block Device
+Once the basic virtio device is done and you've understood the communication method well, it is easy to build the block device on top. We start with the frontend.
+
+### Block Device in the Frontend
+It is instructive to start by reading the chapter 16 on Block Drivers in Linux Device Drivers, 3rd edition. It is a bit dated in terms of the function names etc. But the basic functionality remains the same and the function names in the kernel might have changed a bit. Read especially about the two interfaces a block driver gets to handle requests -- the `make_request_fn` and the `request_fn`. There are important differences between them in terms of where in the request processing pipeline, the driver takes over.
+
+After multiple iterations of trying to get the semantics correct, we have implemented the `request_fn`. The granularity of `make_request_fn` is the `struct bio` which might make it inefficient to *kick* the backend each time. I do not have a comparative analysis of the performance of both but it would be a nice exercise.
+A third interface for the block device driver is to interface with the *multiqueue block layer*. This layer creates per-core queues and thus reduces the request queue lock bottleneck seen in multiprocessor environments. But I think you should try doing that only when you have understood the legacy single queue interfaces well i.e. the make request function and the request function.
+
+Coming to our code, our `struct virtio_vssd` has the following important components to make it work like a block device:
+```
+struct virtio_vssd {
+	...
+	
+	spinlock_t q_lock;
+
+	struct request_queue *queue;
+	struct gendisk *gdisk;
+
+	struct scatterlist sglist[SG_SIZE];
+	...
+};
+```
+The `struct gendisk` is required to be registered as a block device. It is the structure that contains all the information linux needs to interface with this block driver. The `spinlock_t` is the queue lock which we register along with the block device. The kernel uses this spinlock while calling the operation on the request queue associated with this device. The scatterlist array is for converting the request into a scatterlist. We will see how it works shortly.
+
+The relevant portion of the probe function which registers the block device is as follows:
+```
+static int virtio_vssd_probe(struct virtio_device *vdev) {
+	spin_lock_init(&vssd->q_lock);
+
+	vssd->queue = blk_init_queue(virtio_vssd_request, &vssd->q_lock);
+	if(vssd->queue == NULL) {
+		err = -ENOMEM;
+		goto out_free_vssd;
+	}
+
+	vssd->queue->queuedata = vssd;
+	vdev->priv = vssd;
+
+	vssd->gdisk = alloc_disk(MINORS);
+		if (!vssd->gdisk) {
+			//printk (KERN_ALERT "virtio_vssd: Call to alloc_disk failed\n");
+			goto out_free_vssd;
+		}
+	vssd->gdisk->major = virtio_vssd_major;
+	vssd->gdisk->first_minor = MINORS; // TODO: We probably need to set it to 1
+	vssd->gdisk->fops = &virtio_vssd_ops;
+	vssd->gdisk->queue = vssd->queue;
+	vssd->gdisk->private_data = vssd;
+	snprintf (vssd->gdisk->disk_name, 32, "vssda"); // TODO: A crude hard-coding, ince we are creating only one device of this kind.
+
+	set_capacity(vssd->gdisk, vssd->capacity);
+	add_disk(vssd->gdisk);
+
+	sg_init_table(vssd->sglist, SG_SIZE);
+
+	printk(KERN_ALERT "virtio_vssd: Device initialized\n");
+	return 0;
+
+out_free_vssd:
+vssd->vdev->config->del_vqs(vssd->vdev);
+	kfree(vssd);
+
+out:
+	return err;
+}
+```
+
+The request function is registered in the call to `blk_init_queue`. It takes two arguments, the request function to be called by the linux kernel block I/O layer for request processing and the spinlock on the request queue that will be used throughout. 
+
+Then we populate the `struct gendisk` with the data that we have. For example, the major device number, `virtio_vssd_major` is obtained from the call to `register_blkdev` which registers a new block device in the kernel. This call is made in the module init function, `virtio_vssd_driver_init`, which we have not discussed above. We call `alloc_disk` with the number of minor device numbers we want to support. Most modern block drivers have this number as 16. If you set it to 1, you will not be able to see any partitions in the disk.
+
+The disk name is hard-coded for `vssda` for now as we know there will be only one such device in the VM. For multiple devices, one might need to loop through the above construct and assign different names like `vssdb, vssdc, ...`.
+
+`vssd->gdisk->private_data` is an recurring construct worth mentioning. In a lot of places in the linux kernel, a void pointer would be used to store a reference to something that might be referred to later. In this case, we store a pointer to our `struct virtio_vssd` so that we can access its elements later. We do the same with `vssd->queue->queuedata`. Essentially we want to be able to access our device struct later on, maybe for some housekeeping etc. A similar thing was done in the virtio communication explained earlier, when we assign our buffer to the `void *data` so that later when the response comes from the host, we access that buffer from the same pointer.
+
+`sg_init_table` initializes the scatterlist array. We will use this to map the request data into a scatterlist in the request function outlined below.
+```
+static void virtio_vssd_request(struct request_queue *q) {
+	struct request *req;
+	struct virtio_vssd *vssd = q->queuedata;
+	struct virtio_vssd_request *vssdreq;
+	struct scatterlist *sglist[3];
+	struct scatterlist hdr, status;
+	unsigned int num = 0, out = 0, in = 0;
+	int error;
+
+	//printk(KERN_ALERT "virtio_vssd: Request fn called!\n");
+
+    if(unlikely((req = blk_peek_request(q)) == NULL))
+	    goto no_out;
+
+    if(req->cmd_type != REQ_TYPE_FS)
+		goto no_out;
+
+    if(!virtio_vssd_request_valid(req, vssd))
+		goto no_out;
+
+	vssdreq = kmalloc(sizeof(*vssdreq), GFP_ATOMIC);
+	if (unlikely(!vssdreq)) {
+		goto no_out;
+	}
+
+	vssd = req->rq_disk->private_data;
+	vssdreq->request = req;
+
+	num = blk_rq_map_sg(q, req, vssd->sglist);
+	//printk(KERN_ALERT "virtio_vssd: Request mapped to sglist. Count: %u\n", num);
+
+	if(unlikely(!num))
+		goto free_vssdreq;
+
+	vssdreq->hdr.sector = cpu_to_virtio32(vssd->vdev, blk_rq_pos(req));
+	vssdreq->hdr.type = cpu_to_virtio32(vssd->vdev, rq_data_dir(req));
+
+	sg_init_one(&hdr, &vssdreq->hdr, sizeof(vssdreq->hdr));
+	sglist[out++] = &hdr;
+
+	if (rq_data_dir(req) == WRITE) {
+		sglist[out++] = vssd->sglist;
+	} else {
+		sglist[out + in++] = vssd->sglist;
+	}
+
+	sg_init_one(&status, &vssdreq->status, sizeof(vssdreq->status));
+	sglist[out + in++] = &status;
+
+	//printk(KERN_ALERT "virtio_vssd: Sector: %llu\tDirection: %u\n", vssdreq->hdrsector, vssdreq->hdr.type);
+	error = virtqueue_add_sgs(vssd->vq, sglist, out, in, vssdreq, GFP_ATOMIC);
+	if (error < 0) {
+		//printk(KERN_ALERT "virtio_vssd: Error adding scatterlist to virtqueue. Stopping request queue\n");
+		blk_stop_queue(q);
+		goto free_vssdreq;
+	}
+	blk_start_request(req);
+	virtqueue_kick(vssd->vq);
+
+no_out:
+	return;
+
+free_vssdreq:
+	kfree(vssdreq);
+}
+```
+
+For each request, we create three scatterlists. This is the format that we have decided upon by looking at the virtio_blk implementation. It has a lot more number of fields that we do not need. The important thing to keep in mind is the model of communication using virtqueues and the direction -- IN/OUT. Once you have understood the abstract idea, the implementation will reinforce the idea. If you're unsure about how that works, go and read the section on communication again.
+
+The three scatterlists are as follows:
+1. A header, called `struct vssd_hdr`. It just has two fields -- `type and sector`. The former denotes the direction of the request -- READ = 0, WRITE = 1. And the latter is self-explanatory. It is the starting sector number for this request on the device. We mark this as an OUT buffer.
+1. A scatterlist mapped from the block I/O request using the `blk_rq_map_sg()` function. It is marked as IN/OUT based on whether this was a READ/WRITE request.
+1. The status word. This is always an IN buffer and it gets the status of this request from the host to the guest.
+
+A careful reading of the code will give you an idea as to how the indexes of the OUT and IN buffers are maintained and that the OUT buffers are strictly before the IN buffers. The scatterlists are then sent to the `virtqueue_add_sgs()` function.
+
+Finally the frontend *kicks* the backend to tell it to process the request.
+
+On receiving the response back from the backend, the virtqueue callback, `virtio_vssd_request_completed` is called. It calls `virtqueue_get_buf()` and gets the same `struct virtio_vssd_request` on which this request was called. Then it just calls the request completion function, `__blk_end_request_all` and hands over the request for processing by the block I/O layer. It all works seamlessly as long as we follow the virtqueue communication guidelines properly.
+
+### Block Device in the Backend
+Creating a block device in the backend is fairly straightforward. We just add some more state to the `struct VirtIOVssd` like the `backingdevice` name, the fd etc. Inside the `realize` function, we initialize all of this state, for example, open the device file `/dev/sdb` in `O_DIRECT` mode etc.
+
+```
+static void virtio_vssd_device_realize(DeviceState *dev, Error **errp)
+{
+	...
+	
+    strncpy(vssd->backingdevice, "/dev/sdb", 9);
+
+	vssd->fd = open(vssd->backingdevice, O_RDWR | O_DIRECT/* | O_SYNC*/);
+    if(vssd->fd < 0) {
+        error_setg(errp, "Unable to initialize backing SSD state");
+        return;
+    }
+    ...
+	
+    vssd->capacity = 2097152; // =2^21 (# of 512 byte sectors; therefore 2^30 bytes or 1GB)
+    ...
+}
+```
+
+The real work is done by the `virtio_vssd_handle_request` function that was registered for this virtqueue during initialization. Broadly, it does four things --
+1. Pops a `VirtQueueElement` from the virtqueue. Sets some state in the `VirtIOVssdReq` like the device etc.
+1. Extracts the `iovec` iovectors from the VirtQueueElement. There is also direction information attached with each vector.
+1. Performs a read/write directly on the device file using readv/writev functions. Read more about how they work [here](http://man7.org/linux/man-pages/man2/readv.2.html). Sets the status code to the error reported, if any. 
+1. Pushes the VirtQueueElement back to the virtqueue and *notifies* the guest about the data pushed.
+
+The function `qemu_iovec_init_external` just initializes a structure called `QEMUIOVector` which has some more book-keeping than a normal `struct iovec`.
